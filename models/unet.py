@@ -125,7 +125,66 @@ class UNet(nn.Module):
 
         return self.final(up1)
 
+class UNetCIFAR(nn.Module):
+    '''
+        upsample_mode in ['deconv', 'nearest', 'bilinear']
+        pad in ['zero', 'replication', 'none']
+    '''
+    def __init__(self, num_input_channels=3, num_output_channels=3, 
+                       feature_scale=4, concat_x=False,
+                       upsample_mode='deconv', pad='zero', norm_layer=nn.InstanceNorm2d, need_bias=True):
+        super(UNetCIFAR, self).__init__()
 
+        self.feature_scale = feature_scale
+        self.concat_x = concat_x
+        self.n_classes = 10
+
+        filters = [64, 128, 256]
+        filters = [x // self.feature_scale for x in filters]
+
+        self.start = unetConv2(num_input_channels, filters[0] if not concat_x else filters[0] - num_input_channels, norm_layer, need_bias, pad)
+
+        self.down1 = unetDown(filters[0], filters[1] if not concat_x else filters[1] - num_input_channels, norm_layer, need_bias, pad)
+        self.down2 = unetDown(filters[1], filters[2] if not concat_x else filters[2] - num_input_channels, norm_layer, need_bias, pad)
+
+        self.up2 = unetUp(filters[1], upsample_mode, need_bias, pad)
+        self.up1 = unetUp(filters[0], upsample_mode, need_bias, pad)
+
+        self.semifinal = nn.Sequential(conv(filters[0], num_output_channels, 1, bias=need_bias, pad=pad), nn.ReLU())
+        self.fc = nn.Linear(num_output_channels*32*32,self.n_classes)
+
+    def forward(self, inputs):
+
+        # Downsample 
+        
+        n = inputs.shape[0]
+        
+        downs = [inputs]
+
+        in64 = self.start(inputs)
+        if self.concat_x:
+            in64 = torch.cat([in64, downs[0]], 1)
+
+        down1 = self.down1(in64)
+        if self.concat_x:
+            down1 = torch.cat([down1, downs[1]], 1)
+
+        down2 = self.down2(down1)
+        if self.concat_x:
+            down2 = torch.cat([down2, downs[2]], 1)
+
+        up_ = down2
+
+        up2 = self.up2(up_, down1)
+        up1 = self.up1(up2, in64)
+
+        semif = self.semifinal(up1)
+
+        return self.fc(semif.view(n,-1))
+        
+    def __call__(self, x):
+        prediction = self.forward(x)
+        return np.argmax(prediction.data.cpu().numpy(), 1)
 
 class unetConv2(nn.Module):
     def __init__(self, in_size, out_size, norm_layer, need_bias, pad):
